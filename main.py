@@ -662,7 +662,6 @@ class OddEvenButton(Button):
             await interaction.response.send_message(
                 f"{self.round_no}R 결과: {self.이름1} {roll1} ({res1})  {self.이름2} {roll2} ({res2})\n"
                 f"두 번째 홀짝을 선택해 주십시오.\n"
-                f"[{self.round_no+1}R 홀짝] (빨간색 버튼)\n"
                 f"{ts}",
                 view=OddEvenView(self.round_no+1, self.이름1, self.이름2)
             )
@@ -694,7 +693,6 @@ async def 깜짝(ctx, 이름1: str, 이름2: str):
             f"깜짝 사냥을 시작합니다.\n"
             f"참여자: {이름1} vs {이름2}\n"
             f"첫 번째 홀짝을 선택해 주십시오.\n"
-            f"[1R 홀짝] (빨간색 버튼)\n"
             f"{ts}",
             view=OddEvenView(1, 이름1, 이름2)
         )
