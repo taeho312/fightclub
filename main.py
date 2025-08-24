@@ -698,6 +698,45 @@ class OddEvenView(View):
         self.add_item(OddEvenButton(round_no, 이름1, 이름2))
 
 
+# ✅ 깜짝 사냥 (3라운드 홀짝 게임) — 텍스트 버튼 문구 제거 버전
+
+class OddEvenButton(Button):
+    def __init__(self, round_no: int, 이름1: str, 이름2: str):
+        super().__init__(label=f"{round_no}R 홀짝", style=discord.ButtonStyle.danger)
+        self.round_no = round_no
+        self.이름1 = 이름1
+        self.이름2 = 이름2
+
+    async def callback(self, interaction: discord.Interaction):
+        # 두 사람 주사위 1d30씩 굴림
+        roll1 = random.randint(1, 30)
+        roll2 = random.randint(1, 30)
+        res1 = "짝" if roll1 % 2 == 0 else "홀"
+        res2 = "짝" if roll2 % 2 == 0 else "홀"
+        ts = now_kst_str("%Y/%m/%d %H:%M:%S")
+
+        if self.round_no < 3:
+            await interaction.response.send_message(
+                f"{self.round_no}R 결과: {self.이름1} {roll1} ({res1})  {self.이름2} {roll2} ({res2})\n"
+                f"두 번째 홀짝을 선택해 주십시오.\n"
+                f"{ts}",
+                view=OddEvenView(self.round_no+1, self.이름1, self.이름2)
+            )
+        else:
+            # 최종 라운드: 데미지/승자 텍스트만 출력 (계산 없음)
+            await interaction.response.send_message(
+                f"{self.round_no}R 결과: {self.이름1} {roll1} ({res1})  {self.이름2} {roll2} ({res2})\n"
+                f"{self.이름1}: (홀짝을 맞힌 데미지만 판정)\n"
+                f"{self.이름2}: (홀짝을 맞힌 데미지만 판정)\n"
+                f"(이름)의 승리입니다.\n"
+                f"{ts}"
+            )
+
+class OddEvenView(View):
+    def __init__(self, round_no: int, 이름1: str, 이름2: str, timeout: int = 60):
+        super().__init__(timeout=timeout)
+        self.add_item(OddEvenButton(round_no, 이름1, 이름2))
+
 @bot.command(name="깜짝", help="!깜짝 이름1 이름2 → 3라운드 홀짝 주사위 대결을 시작합니다.")
 async def 깜짝(ctx, 이름1: str, 이름2: str):
     try:
@@ -710,9 +749,10 @@ async def 깜짝(ctx, 이름1: str, 이름2: str):
             f"{ts}",
             view=OddEvenView(1, 이름1, 이름2)
         )
+        # 필요하면 최종 수정자 기록:
+        # mark_last_editor(ws("전투"), ctx)
     except Exception as e:
         await ctx.send(f"❌ 전투 시트 기록 실패: {e}")
-
 
 # ✅ 전투 기능 시작
 active_battles = {}
