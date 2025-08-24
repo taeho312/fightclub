@@ -2,9 +2,10 @@
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
+from discord import ButtonStyle   # ← 이 줄 추가
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezon
 import random
 import os
 import json
