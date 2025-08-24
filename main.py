@@ -205,6 +205,13 @@ def _fill_latest_winner(winner_name: str):
 
 # ✅ 공통 유틸
 
+def mark_last_editor(sh, ctx):
+    """해당 워크시트 sh에 최종 수정자 이름을 D2에 기록"""
+    try:
+        sh.update_acell("D2", ctx.author.display_name)
+    except Exception as e:
+        print(f"[WARN] D2 갱신 실패: {e}")
+
 ITEM_RE = re.compile(r"^\s*(.+?)\s*(\d+)\s*개?\s*$")  # "에너지바 2개" / "에너지바 2"
 
 def parse_name_and_qty(text: str):
@@ -302,6 +309,8 @@ async def 구매(ctx, 이름: str, *, 아이템문구: str):
         after = items[item_name]
 
         sh.update_cell(row, 6, items_to_cell(order, items))
+        mark_last_editor(sh, ctx)
+
 
         timestamp = now_kst_str()
         await ctx.send(f"✅ '{이름}'의 '{item_name}' {before}개 → +{add_qty} = **{after}개**로 업데이트\n{timestamp}")
@@ -343,6 +352,7 @@ async def 사용(ctx, 이름: str, *, 아이템문구: str):
             msg_change = f"{before}개 → -{sub_qty} = **{after}개**"
 
         sh.update_cell(row, 6, items_to_cell(order, items))
+        mark_last_editor(sh, ctx)
 
         timestamp = now_kst_str()
         await ctx.send(f"✅ '{이름}'의 '{item_name}' 사용 처리: {msg_change}\n{timestamp}")
@@ -508,6 +518,8 @@ async def 추가(ctx, *args):
     parts.append(timestamp)
     await ctx.send(f"\n".join(parts))
 
+    mark_last_editor(ws("칩"), ctx)
+
 # ✅ 차감
 
 @bot.command(name="차감", help="!차감 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 칩을 수치만큼 뺍니다. 예) !차감 홍길동 김철수 3")
@@ -529,7 +541,7 @@ async def 차감(ctx, *args):
             fail_lines.append(f"❌ '{이름}'을(를) 찾지 못했습니다.")
         else:
             ok_lines.append(f"✅ '{이름}' {cur_val} → -{amount} = **{new_val}** (행 {row}, D열)")
-
+    
     parts = []
     if ok_lines:
         parts.append("\n".join(ok_lines))
@@ -537,6 +549,8 @@ async def 차감(ctx, *args):
         parts.append("\n".join(fail_lines))
     parts.append(timestamp)
     await ctx.send(f"\n".join(parts))
+
+    mark_last_editor(ws("칩"), ctx)
 
 # ✅ 도움말
 
