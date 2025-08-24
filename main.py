@@ -2,7 +2,6 @@
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
-from discord import ButtonStyle   # ← 이 줄 추가
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta, timezon
@@ -139,12 +138,12 @@ class DiceButton(Button):
         )
 
 class DiceView(View):
-    def __init__(self, owner_id: int, timeout: int = 60):
+    def __init__(self, sides: int, style: discord.ButtonStyle, owner_id: int):
         super().__init__(timeout=timeout)
         # 버튼 색: 빨강(위험)=1d6, 파랑(기본)=1d10, 초록(성공)=1d100
-        self.add_item(DiceButton(6,   ButtonStyle.danger,  owner_id))
-        self.add_item(DiceButton(10,  ButtonStyle.primary, owner_id))
-        self.add_item(DiceButton(100, ButtonStyle.success, owner_id))
+        self.add_item(DiceButton(6,   discord.ButtonStyle.danger,  owner_id))
+        self.add_item(DiceButton(10,  discord.ButtonStyle.primary, owner_id))
+        self.add_item(DiceButton(100, discord.ButtonStyle.success, owner_id))
         self.message = None
 
     async def on_timeout(self):
