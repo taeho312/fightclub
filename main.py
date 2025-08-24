@@ -699,51 +699,13 @@ class OddEvenView(View):
         self.add_item(OddEvenButton(round_no, 이름1, 이름2))
 
 
-# ✅ 깜짝 사냥 (3라운드 홀짝 게임) — 텍스트 버튼 문구 제거 버전
-
-class OddEvenButton(Button):
-    def __init__(self, round_no: int, 이름1: str, 이름2: str):
-        super().__init__(label=f"{round_no}R 홀짝", style=discord.ButtonStyle.danger)
-        self.round_no = round_no
-        self.이름1 = 이름1
-        self.이름2 = 이름2
-
-    async def callback(self, interaction: discord.Interaction):
-        # 두 사람 주사위 1d30씩 굴림
-        roll1 = random.randint(1, 30)
-        roll2 = random.randint(1, 30)
-        res1 = "짝" if roll1 % 2 == 0 else "홀"
-        res2 = "짝" if roll2 % 2 == 0 else "홀"
-        ts = now_kst_str("%Y/%m/%d %H:%M:%S")
-
-        if self.round_no < 3:
-            await interaction.response.send_message(
-                f"{self.round_no}R 결과: {self.이름1} {roll1} ({res1})  {self.이름2} {roll2} ({res2})\n"
-                f"두 번째 홀짝을 선택해 주십시오.\n"
-                f"{ts}",
-                view=OddEvenView(self.round_no+1, self.이름1, self.이름2)
-            )
-        else:
-            # 최종 라운드: 데미지/승자 텍스트만 출력 (계산 없음)
-            await interaction.response.send_message(
-                f"{self.round_no}R 결과: {self.이름1} {roll1} ({res1})  {self.이름2} {roll2} ({res2})\n"
-                f"{self.이름1}: (홀짝을 맞힌 데미지만 판정)\n"
-                f"{self.이름2}: (홀짝을 맞힌 데미지만 판정)\n"
-                f"(이름)의 승리입니다.\n"
-                f"{ts}"
-            )
-
-class OddEvenView(View):
-    def __init__(self, round_no: int, 이름1: str, 이름2: str, timeout: int = 60):
-        super().__init__(timeout=timeout)
-        self.add_item(OddEvenButton(round_no, 이름1, 이름2))
-
-# ✅ 깜짝 사냥 (3라운드, 결과 안내 → 참/거짓 입력 → 다음 라운드)
+# ✅ 깜짝 사냥 (3라운드, 결과 안내 → 홀/짝 입력 → 일치한 주사위만 합산)
 class OddEvenView(View):
     def __init__(self, round_no: int, 이름1: str, 이름2: str, owner_id: int, sum1: int = 0, sum2: int = 0, timeout: int = 120):
         super().__init__(timeout=timeout)
         self.add_item(OddEvenButton(round_no, 이름1, 이름2, owner_id, sum1, sum2))
 
+# ✅ 깜짝 사냥 버튼: 결과 안내 → (순서 무시, 쉼표 허용) 홀/짝 입력 → 일치한 주사위만 합산
 class OddEvenButton(Button):
     def __init__(self, round_no: int, 이름1: str, 이름2: str, owner_id: int, sum1: int, sum2: int):
         super().__init__(label=f"{round_no}R 홀짝", style=discord.ButtonStyle.danger)
@@ -769,58 +731,66 @@ class OddEvenButton(Button):
 
         await interaction.response.send_message(
             f"{self.round_no}R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
-            f"※ 이제 아래 형식으로 입력하세요 → `{self.이름1} 참/거짓 {self.이름2} 참/거짓`\n"
-            f"예) `{self.이름1} 참 {self.이름2} 거짓`\n"
+            f"※ 아래 형식으로 입력하세요 (순서 무관, 쉼표 허용)\n"
+            f"예) `{self.이름1} 홀 {self.이름2} 짝`  또는  `{self.이름2} 짝 {self.이름1} 홀`  또는  `{self.이름1} 홀, {self.이름2} 짝`\n"
             f"{ts}"
         )
 
-        # 2) 참/거짓 입력 대기
+        # 2) 입력 대기 (시간 제한 없음)
         def check(msg: discord.Message) -> bool:
-            return (
-                msg.channel.id == interaction.channel.id and
-                msg.author.id == self.owner_id
-            )
+            return msg.channel.id == interaction.channel.id and msg.author.id == self.owner_id
 
-        try:
-            msg: discord.Message = await interaction.client.wait_for('message', check=check, timeout=60)
-        except asyncio.TimeoutError:
-            await interaction.channel.send("⏱️ 입력 시간이 초과되었습니다. 동일 라운드 버튼을 다시 눌러 주세요.")
-            return
+        msg: discord.Message = await interaction.client.wait_for("message", check=check)
 
-        m = re.match(
-            rf"^\s*{re.escape(self.이름1)}\s*(참|거짓)\s+{re.escape(self.이름2)}\s*(참|거짓)\s*$",
-            msg.content.strip()
-        )
-        if not m:
+        # 쉼표/공백 정규화
+        text = re.sub(r"[,\s]+", " ", msg.content.strip())
+
+        # 이름 다음에 오는 홀/짝을 순서 무시로 추출
+        def pick_for(name: str):
+            # 공백 경계 기반 매칭: (시작|공백) 이름 공백* (홀|짝) (공백|끝)
+            m = re.search(rf"(?:^|\s){re.escape(name)}\s*(홀|짝)(?=\s|$)", text)
+            return m.group(1) if m else None
+
+        pick1 = pick_for(self.이름1)
+        pick2 = pick_for(self.이름2)
+
+        if not pick1 or not pick2:
             await interaction.channel.send(
-                f"⚠️ 형식이 올바르지 않습니다. `'{self.이름1} 참/거짓 {self.이름2} 참/거짓'` 형식으로 입력해 주세요.\n"
-                f"예) `{self.이름1} 참 {self.이름2} 거짓`"
+                f"⚠️ 입력에 `{self.이름1}`과 `{self.이름2}`의 선택(홀/짝)이 모두 포함되어야 합니다.\n"
+                f"예) `{self.이름1} 홀, {self.이름2} 짝`"
             )
             return
 
-        # 3) "참"만 합계에 반영
-        keep1 = (m.group(1) == "참")
-        keep2 = (m.group(2) == "참")
-        if keep1: self.sum1 += r1
-        if keep2: self.sum2 += r2
+        # 3) 사용자 입력과 결과가 같은 경우만 합산
+        if pick1 == res1:
+            self.sum1 += r1
+        if pick2 == res2:
+            self.sum2 += r2
 
-        # 4) 다음 진행
+        # 4) 다음 라운드 or 종료
         if self.round_no < 3:
             await interaction.channel.send(
                 f"다음 라운드로 진행합니다. ({self.round_no+1}R)",
-                view=OddEvenView(self.round_no + 1, self.이름1, self.이름2, self.owner_id, self.sum1, self.sum2)
+                view=OddEvenView(self.round_no+1, self.이름1, self.이름2, self.owner_id, self.sum1, self.sum2)
             )
         else:
             ts_final = now_kst_str("%Y/%m/%d %H:%M:%S")
+            if self.sum1 > self.sum2:
+                result_line = f"{self.이름1}의 승리입니다."
+            elif self.sum2 > self.sum1:
+                result_line = f"{self.이름2}의 승리입니다."
+            else:
+                result_line = "무승부입니다."
+
             await interaction.channel.send(
                 f"3R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
                 f"{self.이름1}: {self.sum1}\n"
                 f"{self.이름2}: {self.sum2}\n"
-                f"(이름)의 승리입니다.\n"
+                f"{result_line}\n"
                 f"{ts_final}"
             )
 
-@bot.command(name="깜짝", help="!깜짝 이름1 이름2 → 3라운드 홀짝(결과 안내→참/거짓 입력) 진행")
+@bot.command(name="깜짝", help="!깜짝 이름1 이름2 → 3라운드 홀짝(결과 안내→홀/짝 입력) 진행")
 async def 깜짝(ctx, 이름1: str, 이름2: str):
     try:
         _append_battle_row("깜짝", 이름1, 이름2)
@@ -832,7 +802,7 @@ async def 깜짝(ctx, 이름1: str, 이름2: str):
             f"{ts}",
             view=OddEvenView(1, 이름1, 이름2, owner_id=ctx.author.id)
         )
-        # 필요시 D2 기록:
+        # 필요 시 최종 수정자 기록:
         # mark_last_editor(ws("전투"), ctx)
     except Exception as e:
         await ctx.send(f"❌ 전투 시트 기록 실패: {e}")
