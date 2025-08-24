@@ -10,6 +10,7 @@ import os
 import json
 import sys
 import re
+import asyncio
 
 KST = timezone(timedelta(hours=9))
 
@@ -737,7 +738,89 @@ class OddEvenView(View):
         super().__init__(timeout=timeout)
         self.add_item(OddEvenButton(round_no, 이름1, 이름2))
 
-@bot.command(name="깜짝", help="!깜짝 이름1 이름2 → 3라운드 홀짝 주사위 대결을 시작합니다.")
+# ✅ 깜짝 사냥 (3라운드, 결과 안내 → 참/거짓 입력 → 다음 라운드)
+class OddEvenView(View):
+    def __init__(self, round_no: int, 이름1: str, 이름2: str, owner_id: int, sum1: int = 0, sum2: int = 0, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.add_item(OddEvenButton(round_no, 이름1, 이름2, owner_id, sum1, sum2))
+
+class OddEvenButton(Button):
+    def __init__(self, round_no: int, 이름1: str, 이름2: str, owner_id: int, sum1: int, sum2: int):
+        super().__init__(label=f"{round_no}R 홀짝", style=discord.ButtonStyle.danger)
+        self.round_no = round_no
+        self.이름1 = 이름1
+        self.이름2 = 이름2
+        self.owner_id = owner_id
+        self.sum1 = sum1
+        self.sum2 = sum2
+
+    async def callback(self, interaction: discord.Interaction):
+        # 버튼은 명령 실행자만
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있어요.", ephemeral=True)
+            return
+
+        # 1) 결과 안내
+        r1 = random.randint(1, 30)
+        r2 = random.randint(1, 30)
+        res1 = "짝" if r1 % 2 == 0 else "홀"
+        res2 = "짝" if r2 % 2 == 0 else "홀"
+        ts = now_kst_str("%Y/%m/%d %H:%M:%S")
+
+        await interaction.response.send_message(
+            f"{self.round_no}R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
+            f"※ 이제 아래 형식으로 입력하세요 → `{self.이름1} 참/거짓 {self.이름2} 참/거짓`\n"
+            f"예) `{self.이름1} 참 {self.이름2} 거짓`\n"
+            f"{ts}"
+        )
+
+        # 2) 참/거짓 입력 대기
+        def check(msg: discord.Message) -> bool:
+            return (
+                msg.channel.id == interaction.channel.id and
+                msg.author.id == self.owner_id
+            )
+
+        try:
+            msg: discord.Message = await interaction.client.wait_for('message', check=check, timeout=60)
+        except asyncio.TimeoutError:
+            await interaction.channel.send("⏱️ 입력 시간이 초과되었습니다. 동일 라운드 버튼을 다시 눌러 주세요.")
+            return
+
+        m = re.match(
+            rf"^\s*{re.escape(self.이름1)}\s*(참|거짓)\s+{re.escape(self.이름2)}\s*(참|거짓)\s*$",
+            msg.content.strip()
+        )
+        if not m:
+            await interaction.channel.send(
+                f"⚠️ 형식이 올바르지 않습니다. `'{self.이름1} 참/거짓 {self.이름2} 참/거짓'` 형식으로 입력해 주세요.\n"
+                f"예) `{self.이름1} 참 {self.이름2} 거짓`"
+            )
+            return
+
+        # 3) "참"만 합계에 반영
+        keep1 = (m.group(1) == "참")
+        keep2 = (m.group(2) == "참")
+        if keep1: self.sum1 += r1
+        if keep2: self.sum2 += r2
+
+        # 4) 다음 진행
+        if self.round_no < 3:
+            await interaction.channel.send(
+                f"다음 라운드로 진행합니다. ({self.round_no+1}R)",
+                view=OddEvenView(self.round_no + 1, self.이름1, self.이름2, self.owner_id, self.sum1, self.sum2)
+            )
+        else:
+            ts_final = now_kst_str("%Y/%m/%d %H:%M:%S")
+            await interaction.channel.send(
+                f"3R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
+                f"{self.이름1}: {self.sum1}\n"
+                f"{self.이름2}: {self.sum2}\n"
+                f"(이름)의 승리입니다.\n"
+                f"{ts_final}"
+            )
+
+@bot.command(name="깜짝", help="!깜짝 이름1 이름2 → 3라운드 홀짝(결과 안내→참/거짓 입력) 진행")
 async def 깜짝(ctx, 이름1: str, 이름2: str):
     try:
         _append_battle_row("깜짝", 이름1, 이름2)
@@ -747,9 +830,9 @@ async def 깜짝(ctx, 이름1: str, 이름2: str):
             f"참여자: {이름1} vs {이름2}\n"
             f"첫 번째 홀짝을 선택해 주십시오.\n"
             f"{ts}",
-            view=OddEvenView(1, 이름1, 이름2)
+            view=OddEvenView(1, 이름1, 이름2, owner_id=ctx.author.id)
         )
-        # 필요하면 최종 수정자 기록:
+        # 필요시 D2 기록:
         # mark_last_editor(ws("전투"), ctx)
     except Exception as e:
         await ctx.send(f"❌ 전투 시트 기록 실패: {e}")
