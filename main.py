@@ -118,7 +118,7 @@ async def 시트테스트(ctx):
 # ✅ 다이스 버튼
 
 class DiceButton(Button):
-    def __init__(self, sides: int, style: ButtonStyle, owner_id: int):
+    def __init__(self, sides: int, style: discord.ButtonStyle, owner_id: int):
         super().__init__(label=f"1d{sides}", style=style)
         self.sides = sides
         self.owner_id = owner_id
@@ -138,7 +138,7 @@ class DiceButton(Button):
         )
 
 class DiceView(View):
-    def __init__(self, sides: int, style: discord.ButtonStyle, owner_id: int):
+    def __init__(self, owner_id: int, timeout: int = 60):
         super().__init__(timeout=timeout)
         # 버튼 색: 빨강(위험)=1d6, 파랑(기본)=1d10, 초록(성공)=1d100
         self.add_item(DiceButton(6,   discord.ButtonStyle.danger,  owner_id))
@@ -556,7 +556,7 @@ HELP_OVERRIDES = {
     "추가":   "칩 시트에서 B열의 이름을 찾아 같은 행 D열(칩)에 수치만큼 더합니다. 예) !추가 홍길동 5",
     "차감":   "칩 시트에서 B열의 이름을 찾아 같은 행 D열(칩)에서 수치만큼 뺍니다. 예) !차감 홍길동 5",
     "접속":   "현재 봇이 정상 작동 중인지 확인합니다.",
-    "다이스":    "다이스를 굴려 1에서 10까지의 결괏값을 출력합니다. 예) !다이스",
+    "다이스": "버튼으로 1d6/1d10/1d100을 굴립니다. 예) !다이스",
     "전투":    "전투에 참여하는 플레이어 이름을 입력하여 전투를 진행합니다. 예) !전투 이름1 이름2"
 }
 
@@ -686,7 +686,7 @@ class BattleAttackButton(Button):
         attacker = data["턴"]
         defender = data["상대"]
 
-        # 공격 주사위 4개 (1D6 × 4)
+        # 공격 주사위 5개 (1D6 × 5)
         atk_rolls = [random.randint(1, 6) for _ in range(5)]
         atk_sum = sum(atk_rolls)
 
