@@ -1,0 +1,897 @@
+# 🔐 라이브러리 및 기본 설정
+import discord
+from discord.ext import commands
+from discord.ui import Button, View
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta, timezone
+import random
+import os
+import json
+import sys
+import re
+
+KST = timezone(timedelta(hours=9))
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# 🔐 환경변수 확인
+DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+GOOGLE_CREDS = os.getenv("GOOGLE_CREDS")
+SHEET_KEY = os.getenv("SHEET_KEY")
+
+missing = [k for k, v in {
+    "DISCORD_BOT_TOKEN": DISCORD_TOKEN,
+    "GOOGLE_CREDS": GOOGLE_CREDS,
+    "SHEET_KEY": SHEET_KEY
+}.items() if not v]
+if missing:
+    print(f"❌ 누락된 환경변수: {', '.join(missing)}")
+    sys.exit(1)
+
+# 🔐 구글 시트 인증
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+try:
+    creds_dict = json.loads(GOOGLE_CREDS)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    gclient = gspread.authorize(creds)
+    sheet = gclient.open_by_key(SHEET_KEY).sheet1  # 기본은 1번째 시트
+except Exception as e:
+    print("❌ 구글 스프레드시트 인증/접속 실패:", e)
+    sys.exit(1)
+
+# 🧰 유틸
+def now_kst_str(fmt="%Y-%m-%d %H:%M:%S"):
+    return datetime.now(KST).strftime(fmt)
+
+DICE_EMOJI = {
+    1: "🎲1", 2: "🎲2", 3: "🎲3",
+    4: "🎲4", 5: "🎲5", 6: "🎲6"
+}
+
+# 다중 이름 파서: 공백/쉼표 섞여도 처리
+def _parse_names_and_amount(args):
+    """
+    args 예: ("홍길동","김철수","5")  또는 ("홍길동,김철수","5")
+    returns: (names:list[str], amount:int)  또는 (None, error_msg)
+    """
+    if len(args) < 2:
+        return None, "⚠️ 최소 1명 이상의 이름과 수치를 입력하세요. 예) `!추가 홍길동 김철수 5`"
+
+    amount_str = args[-1]
+    if not amount_str.isdigit():
+        return None, "⚠️ 수치는 양의 정수여야 합니다. 예) `!추가 홍길동 김철수 5`"
+    amount = int(amount_str)
+
+    raw_names = args[:-1]
+    names = []
+    for token in raw_names:
+        for part in token.split(","):
+            nm = part.strip()
+            if nm:
+                names.append(nm)
+
+    if not names:
+        return None, "⚠️ 유효한 이름이 없습니다. 예) `!추가 홍길동 김철수 5`"
+
+    # 같은 이름이 여러 번 입력되면 중복 제거(순서 유지)
+    names = list(dict.fromkeys(names))
+    return (names, amount), None
+
+@bot.event
+async def on_ready():
+    print(f'✅ Logged in as {bot.user} ({bot.user.id})')
+
+@bot.command(name="접속", help="현재 봇이 정상 작동 중인지 확인합니다. 만약 봇이 응답하지 않으면 접속 오류입니다. 예) !접속")
+async def 접속(ctx):
+    timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    await ctx.send(f"현재 봇이 구동 중입니다.\n{timestamp}")
+
+# ✅ 연결 테스트용 커맨드 (원하면 삭제 가능)
+@bot.command(name="시트테스트", help="연결 확인 시트의 A1에 현재 시간을 기록하고 값을 확인합니다. 예) !시트테스트")
+async def 시트테스트(ctx):
+    try:
+        sh = ws("연결 확인")  # '연결 확인' 시트 핸들러
+        sh.update_acell("A1", f"✅ 연결 OK @ {now_kst_str()}")
+        val = sh.acell("A1").value
+        await ctx.send(f"A1 = {val}")
+    except Exception as e:
+        await ctx.send(f"❌ 시트 접근 실패: {e}")
+
+@bot.command(name="다이스", help="다이스를 굴려 1에서 10까지의 결괏값을 출력합니다. 예) !다이스")
+async def 다이스(ctx):
+    roll = random.randint(1, 10)
+    timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    await ctx.send(f"1D10 결과: **{roll}**\n{timestamp}")
+
+# ====== 명령어: !합계 / !구매 / !사용 ======
+
+def ws(title: str):
+    # 같은 문서 내 워크시트 핸들러
+    return gclient.open_by_key(SHEET_KEY).worksheet(title)
+
+@bot.command(name="합계", help="체력값 시트의 대선(G2), 사련(I2) 값을 불러옵니다. 예) !합계")
+async def 합계(ctx):
+    try:
+        sh = ws("체력값")
+        v_g2 = sh.acell("G2").value  # 대선
+        v_i2 = sh.acell("I2").value  # 사련
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        await ctx.send(
+            f"현재 대선의 체력값은 '{v_g2}', 사련의 체력값은 '{v_i2}'입니다.\n{timestamp}"
+        )
+    except Exception as e:
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        await ctx.send(f"❌ 조회 실패: {e}\n{timestamp}")
+
+def _find_row_by_name(worksheet, name: str) -> int | None:
+    # '명단' 시트의 B열에서 정확히 일치하는 첫 행 번호 반환 (없으면 None)
+    try:
+        colB = worksheet.col_values(2)  # B열 = index 2
+        for idx, val in enumerate(colB, start=1):
+            if (val or "").strip() == name.strip():
+                return idx
+        return None
+    except Exception:
+        return None
+
+def _normalize_items_str(s: str | None) -> str:
+    # 콤마로 구분된 아이템 문자열 정규화 (공백 제거, 빈 토큰 제거)
+    if not s:
+        return ""
+    items = [t.strip() for t in s.split(", ") if t.strip()]
+    return ", ".join(items)
+
+# ===== 공통 유틸 =====
+ITEM_RE = re.compile(r"^\s*(.+?)\s*(\d+)\s*개?\s*$")  # "에너지바 2개" / "에너지바 2"
+
+def parse_name_and_qty(text: str):
+    """
+    '에너지바 2개' → ('에너지바', 2)
+    '에너지바'     → ('에너지바', 1)
+    끝의 '개'는 있어도/없어도 됨.
+    """
+    s = (text or "").strip()
+    m = ITEM_RE.match(s)
+    if m:
+        name = m.group(1).strip()
+        qty = int(m.group(2))
+        return name, qty
+    # 수량이 없으면 1개로 처리
+    return s, 1
+
+def parse_items_cell(cell_value: str):
+    """
+    "에너지바 3개, 붕대 2개" → Ordered list + dict
+    반환: (ordered_names, counts_dict)
+    """
+    items = {}
+    order = []
+    s = (cell_value or "").strip()
+    if not s:
+        return order, items
+    for chunk in s.split(","):
+        tok = chunk.strip()
+        if not tok:
+            continue
+        m = ITEM_RE.match(tok)
+        if m:
+            name = m.group(1).strip()
+            qty = int(m.group(2))
+        else:
+            name = tok
+            qty = 1
+        if name not in items:
+            order.append(name)
+            items[name] = 0
+        items[name] += qty
+    return order, items
+
+def items_to_cell(order, items):
+    """
+    order 순서를 유지해 "이름 N개"로 직렬화.
+    수량 0 이하는 제외.
+    """
+    out = []
+    for name in order:
+        qty = items.get(name, 0)
+        if qty > 0:
+            out.append(f"{name} {qty}개")
+    # 혹시 새로 추가된 이름이 order에 없으면 뒤에 붙이기
+    for name, qty in items.items():
+        if qty > 0 and name not in order:
+            out.append(f"{name} {qty}개")
+    return ", ".join(out)
+
+def find_row_by_name(sheet, target_name: str, name_col=2):
+    """B열에서 이름 정확 일치 행 찾기 (없으면 None)"""
+    col_vals = sheet.col_values(name_col)
+    tgt = (target_name or "").strip()
+    for idx, val in enumerate(col_vals, start=1):
+        if (val or "").strip() == tgt:
+            return idx
+    return None
+
+# ===== !구매 / !사용 =====
+@bot.command(name="구매", help="!구매 이름 아이템 [수] → 명단 시트 F열 물품 수량을 추가합니다. 예) !구매 홍길동 에너지바 2개")
+async def 구매(ctx, 이름: str, *, 아이템문구: str):
+    try:
+        sh = ws("명단")
+        row = find_row_by_name(sh, 이름, name_col=2)  # B열
+        if not row:
+            await ctx.send(f"❌ '명단' 시트 B열에서 '{이름}'을 찾지 못했습니다.")
+            return
+
+        item_name, add_qty = parse_name_and_qty(아이템문구)
+        if add_qty <= 0:
+            await ctx.send(f"⚠️ 수량은 1 이상이어야 합니다. 예) `!구매 홍길동 에너지바 2개`")
+            return
+
+        cell_val = sh.cell(row, 6).value  # F열
+        order, items = parse_items_cell(cell_val)
+
+        # 업데이트
+        if item_name not in items:
+            order.append(item_name)
+            items[item_name] = 0
+        before = items[item_name]
+        items[item_name] += add_qty
+        after = items[item_name]
+
+        sh.update_cell(row, 6, items_to_cell(order, items))
+
+        timestamp = now_kst_str()
+        await ctx.send(f"✅ '{이름}'의 '{item_name}' {before}개 → +{add_qty} = **{after}개**로 업데이트\n{timestamp}")
+
+    except Exception as e:
+        await ctx.send(f"❌ 구매 처리 실패: {e}")
+
+@bot.command(name="사용", help="!사용 이름 아이템 [수] → 명단 시트 F열 물품 수량을 감소합니다. 예) !사용 홍길동 에너지바 2개")
+async def 사용(ctx, 이름: str, *, 아이템문구: str):
+    try:
+        sh = ws("명단")
+        row = find_row_by_name(sh, 이름, name_col=2)  # B열
+        if not row:
+            await ctx.send(f"❌ '명단' 시트 B열에서 '{이름}'을 찾지 못했습니다.")
+            return
+
+        item_name, sub_qty = parse_name_and_qty(아이템문구)
+        if sub_qty <= 0:
+            await ctx.send(f"⚠️ 수량은 1 이상이어야 합니다. 예) `!사용 홍길동 에너지바 2개`")
+            return
+
+        cell_val = sh.cell(row, 6).value  # F열
+        order, items = parse_items_cell(cell_val)
+
+        if item_name not in items or items[item_name] <= 0:
+            await ctx.send(f"⚠️ '{이름}'에게 '{item_name}'가 없습니다.")
+            return
+
+        before = items[item_name]
+        after = before - sub_qty
+        if after <= 0:
+            # 0 이하는 삭제
+            items[item_name] = 0
+            # order에서 완전히 제거할지 유지할지 선택: 여기선 제거
+            order = [n for n in order if n != item_name]
+            msg_change = f"{before}개 → -{sub_qty} = **0개** (목록에서 제거)"
+        else:
+            items[item_name] = after
+            msg_change = f"{before}개 → -{sub_qty} = **{after}개**"
+
+        sh.update_cell(row, 6, items_to_cell(order, items))
+
+        timestamp = now_kst_str()
+        await ctx.send(f"✅ '{이름}'의 '{item_name}' 사용 처리: {msg_change}\n{timestamp}")
+
+    except Exception as e:
+        await ctx.send(f"❌ 사용 처리 실패: {e}")
+
+def _find_row_in_colB(sh, name: str):
+    """B열에서 이름 정확 일치 행 번호 반환 (없으면 None)"""
+    colB = sh.col_values(2)
+    target = (name or "").strip()
+    for idx, val in enumerate(colB, start=1):
+        if (val or "").strip() == target:
+            return idx
+    return None
+
+def _read_hp_D(sh, row: int) -> int:
+    """해당 행의 D열(체력값) 정수 읽기 (비정상/공백은 0)"""
+    raw = (sh.cell(row, 4).value or "0").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+def _write_hp_D(sh, row: int, value: int):
+    """해당 행의 D열 값 쓰기"""
+    sh.update_cell(row, 4, value)
+
+def _apply_delta_to_hp(name: str, delta: int):
+    """
+    '체력값' 시트에서 이름(B열) 찾아, 같은 행 D열에 delta만큼 반영.
+    반환: (row, cur_val, new_val)
+    """
+    sh = ws("체력값")
+    row = _find_row_in_colB(sh, name)
+    if not row:
+        return None, None, None
+    cur_val = _read_hp_D(sh, row)
+    new_val = cur_val + delta
+    _write_hp_D(sh, row, new_val)
+    return row, cur_val, new_val
+
+@bot.command(name="추첨", help="!추첨 숫자 → 체력값 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3")
+async def 추첨(ctx, 숫자: str):
+    if not 숫자.isdigit():
+        await ctx.send(f"⚠️ 숫자를 입력하세요. 예) `!추첨 3`")
+        return
+
+    k = int(숫자)
+    if k <= 0:
+        await ctx.send(f"⚠️ 1 이상의 숫자를 입력하세요. 예) `!추첨 1`")
+        return
+
+    try:
+        sh = ws("체력값")
+        colB = sh.col_values(2)  # B열 전체
+        if len(colB) < 6:
+            await ctx.send(f"⚠️ B6 이후 이름 데이터가 없습니다.")
+            return
+
+        # B6부터 끝까지, 비어있지 않은 이름만 수집
+        candidates = [v.strip() for v in colB[5:] if v and v.strip()]
+        total = len(candidates)
+        if total == 0:
+            await ctx.send(f"⚠️ 추첨 대상이 없습니다. (B6 이후가 비어 있음)")
+            return
+        if k > total:
+            await ctx.send(f"⚠️ 추첨 인원이 대상 수({total}명)를 초과합니다. 더 작은 숫자를 입력하세요.")
+            return
+
+        winners = random.sample(candidates, k)
+        timestamp = now_kst_str()
+        await ctx.send(f"추첨 결과 ({k}명): {', '.join(winners)}\n{timestamp}")
+
+    except Exception as e:
+        await ctx.send(f"❌ 추첨 실패: {e}")
+
+# 랜덤 전용 파서 (메시지 문구를 랜덤에 맞춤)
+def _parse_names_and_k_for_random(args):
+    """
+    args: ("이름1","이름2","...","k")
+    returns: (names:list[str], k:int) or (None, error_msg)
+    """
+    if len(args) < 2:
+        return None, "⚠️ 최소 1명 이상의 이름과 추첨 인원 수를 입력하세요. 예) `!랜덤 홍길동 김철수 박영희 2`"
+
+    k_str = args[-1]
+    if not k_str.isdigit():
+        return None, "⚠️ 추첨 인원 수는 양의 정수여야 합니다. 예) `!랜덤 홍길동 김철수 박영희 2`"
+    k = int(k_str)
+    if k <= 0:
+        return None, "⚠️ 추첨 인원 수는 1 이상이어야 합니다."
+
+    raw_names = args[:-1]
+    names = []
+    for token in raw_names:
+        for part in token.split(","):
+            nm = part.strip()
+            if nm:
+                names.append(nm)
+
+    if not names:
+        return None, "⚠️ 유효한 이름이 없습니다. 예) `!랜덤 홍길동 김철수 박영희 2`"
+
+    # 동일 이름이 여러 번 들어와도 1명으로 간주(중복 제거, 순서 유지)
+    names = list(dict.fromkeys(names))
+    return (names, k), None
+
+@bot.command(
+    name="랜덤",
+    help="!랜덤 이름1 이름2 ... k → 입력한 이름 중 서로 다른 k명을 무작위로 뽑습니다. 예) !랜덤 홍길동 김철수 박영희 2"
+)
+async def 랜덤(ctx, *args):
+    parsed, err = _parse_names_and_k_for_random(args)
+    timestamp = now_kst_str()
+    if err:
+        await ctx.send(f"{err}\n{timestamp}")
+        return
+
+    names, k = parsed
+    n = len(names)
+
+    # k가 후보 수보다 크면 자동 조정
+    adjusted_msg = ""
+    if k > n:
+        k = n
+        adjusted_msg = f"\n(ℹ️ 후보가 {n}명이므로 {n}명으로 추첨 인원을 조정했습니다.)"
+
+    winners = random.sample(names, k)  # 중복 당첨 없음
+    await ctx.send(f"랜덤 선택 ({k}명): {', '.join(winners)}{adjusted_msg}\n{timestamp}")
+
+@bot.command(name="추가", help="!추가 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 체력값을 수치만큼 더합니다. 예) !추가 홍길동 김철수 5")
+async def 추가(ctx, *args):
+    parsed, err = _parse_names_and_amount(args)
+    timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    if err:
+        await ctx.send(f"{err}\n{timestamp}")
+        return
+
+    names, amount = parsed
+    delta = amount  # 무조건 증가
+
+    ok_lines = []
+    fail_lines = []
+    for 이름 in names:
+        row, cur_val, new_val = _apply_delta_to_hp(이름, delta)
+        if row is None:
+            fail_lines.append(f"❌ '{이름}'을(를) 찾지 못했습니다.")
+        else:
+            ok_lines.append(f"✅ '{이름}' {cur_val} → +{delta} = **{new_val}** (행 {row}, D열)")
+
+    # 결과 묶어서 출력
+    parts = []
+    if ok_lines:
+        parts.append("\n".join(ok_lines))
+    if fail_lines:
+        parts.append("\n".join(fail_lines))
+    parts.append(timestamp)
+    await ctx.send(f"\n".join(parts))
+
+@bot.command(name="차감", help="!차감 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 체력값을 수치만큼 뺍니다. 예) !차감 홍길동 김철수 3")
+async def 차감(ctx, *args):
+    parsed, err = _parse_names_and_amount(args)
+    timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    if err:
+        await ctx.send(f"{err}\n{timestamp}")
+        return
+
+    names, amount = parsed
+    delta = -amount  # 무조건 감소
+
+    ok_lines = []
+    fail_lines = []
+    for 이름 in names:
+        row, cur_val, new_val = _apply_delta_to_hp(이름, delta)
+        if row is None:
+            fail_lines.append(f"❌ '{이름}'을(를) 찾지 못했습니다.")
+        else:
+            ok_lines.append(f"✅ '{이름}' {cur_val} → -{amount} = **{new_val}** (행 {row}, D열)")
+
+    parts = []
+    if ok_lines:
+        parts.append("\n".join(ok_lines))
+    if fail_lines:
+        parts.append("\n".join(fail_lines))
+    parts.append(timestamp)
+    await ctx.send(f"\n".join(parts))
+
+# ====== 도움말: 고정 순서/설명으로 보기 좋게 출력 ======
+
+# 기본 help 제거 (중복 방지)
+bot.remove_command("help")
+
+# 도움말 표기 고정(오버라이드) 사전
+HELP_OVERRIDES = {
+    "도움말":  "현재 사용 가능한 명령어 목록을 표시합니다.",
+    "시트테스트":    "연결 확인 시트의 A1에 현재 시간을 기록하고 값을 확인합니다. 예) !시트테스트",
+    "추첨":    "체력값 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3",
+    "랜덤":    "쉼표 제외 입력한 이름 중 하나를 무작위로 출력합니다. 예) !랜덤 김철수 신짱구 훈이",
+    "합계":   "체력값 시트의 대선(G2), 사련(I2) 값을 불러옵니다. 예) !합계",
+    "구매":   "명단 시트에서 B열의 이름을 찾아 같은 행 F열 물품목록에 아이템을 추가(콤마 누적)합니다. 예) !구매 홍길동 붕대",
+    "사용":   "명단 시트에서 B열의 이름을 찾아 같은 행 F열에서 해당 아이템 1개를 제거합니다. 예) !사용 홍길동 붕대",
+    "전체":   "!전체 +수치 / -수치 → 체력값 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3",
+    "추가":   "체력값 시트에서 B열의 이름을 찾아 같은 행 D열(체력값)에 수치만큼 더합니다. 예) !추가 홍길동 5",
+    "차감":   "체력값 시트에서 B열의 이름을 찾아 같은 행 D열(체력값)에서 수치만큼 뺍니다. 예) !차감 홍길동 5",
+    "접속":   "현재 봇이 정상 작동 중인지 확인합니다.",
+    "다이스":    "다이스를 굴려 1에서 10까지의 결괏값을 출력합니다. 예) !다이스",
+    "전투":    "전투에 참여하는 플레이어 이름을 입력하여 전투를 진행합니다. 예) !전투 이름1 이름2"
+}
+
+# 표기 순서 고정
+HELP_ORDER = ["도움말", "시트테스트", "추첨", "랜덤", "합계", "구매", "사용", "전체", "추가", "차감", "접속", "다이스", "전투"]
+
+@bot.command(name="도움말")
+async def 도움말(ctx):
+    # 현재 로드된 커맨드들
+    loaded = {cmd.name: cmd for cmd in bot.commands if not cmd.hidden}
+
+    # 우선 순서대로 정리 + 로드되지 않은 항목은 건너뜀
+    lines = ["**사용 가능한 명령어**\n"]
+    for name in HELP_ORDER:
+        if name in loaded:
+            desc = HELP_OVERRIDES.get(name) or (loaded[name].help or "설명 없음")
+            lines.append(f"**!{name}** — {desc}")
+
+    # HELP_ORDER에 없지만 로드된 커맨드가 더 있다면 뒤에 추가
+    for name, cmd in sorted(loaded.items()):
+        if name in HELP_ORDER:
+            continue
+        desc = HELP_OVERRIDES.get(name) or (cmd.help or "설명 없음")
+        lines.append(f"**!{name}** — {desc}")
+
+    await ctx.send(f"\n".join(lines))
+
+@bot.command(
+    name="전체",
+    help="!전체 +수치 / -수치 → 체력값 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3"
+)
+async def 전체(ctx, 수치: str):
+    s = (수치 or "").strip()
+    if not (s.startswith("+") or s.startswith("-")):
+        await ctx.send(f"⚠️ 수치는 + 또는 -로 시작해야 합니다. 예) `!전체 +5` 또는 `!전체 -3`")
+        return
+    try:
+        delta = int(s)
+    except ValueError:
+        await ctx.send(f"⚠️ 수치는 정수여야 합니다. 예) `!전체 +5` 또는 `!전체 -3`")
+        return
+
+    try:
+        sh = ws("체력값")
+
+        # 마지막 행 계산 (D열에서)
+        col_d = sh.col_values(4)  # D열 전체 값
+        last_row = len(col_d)
+        if last_row < 6:
+            await ctx.send(f"⚠️ D6 이후 데이터가 없습니다.")
+            return
+
+        rng = f"D6:D{last_row}"
+        rows = sh.get(rng)
+        new_rows, changed = [], 0
+
+        for r in rows:
+            raw = (r[0] if r else "").strip()
+            if raw == "":
+                new_rows.append([raw])  # 빈칸 유지
+                continue
+            try:
+                cur = int(raw)
+                new_rows.append([cur + delta])
+                changed += 1
+            except ValueError:
+                new_rows.append([raw])  # 숫자 아님 → 유지
+
+        # 시트 업데이트
+        sh.update(rng, new_rows, value_input_option="USER_ENTERED")
+
+        # 최종 수정자 닉네임 기록 (D2)
+        sh.update_acell("D2", ctx.author.display_name)
+
+        # 결과 메시지 + 타임스탬프
+        sign = "+" if delta >= 0 else ""
+        timestamp = now_kst_str()
+        await ctx.send(
+            f"✅ 전체 체력값에 적용 완료했습니다.\n{timestamp}"
+        )
+
+    except Exception as e:
+        await ctx.send(f"❌ 일괄 증감 실패: {e}")
+
+
+# ✅ 전투 기능 시작
+active_battles = {}
+
+def get_hp_bar(current, max_hp=50, bar_length=10):
+    # 체력 바는 current 값 그대로, 음수도 허용
+    filled_length = int(bar_length * max(min(current, max_hp), 0) / max_hp)
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+    return f"[{bar}] {current}/{max_hp}"
+
+def decide_winner(hp1_val, hp2_val, p1, p2):
+    # 0 이하면 '0에 더 가까운'(값이 더 큰) 쪽이 승
+    if hp1_val <= 0 and hp2_val > 0:
+        return p2
+    elif hp2_val <= 0 and hp1_val > 0:
+        return p1
+    elif hp1_val <= 0 and hp2_val <= 0:
+        if hp1_val > hp2_val:
+            return p1
+        elif hp2_val > hp1_val:
+            return p2
+        else:
+            return None  # 무승부
+    else:
+        if hp1_val > hp2_val:
+            return p1
+        elif hp2_val > hp1_val:
+            return p2
+        else:
+            return None  # 무승부
+
+class BattleAttackButton(Button):
+    def __init__(self, channel_id):
+        super().__init__(label="공격", style=discord.ButtonStyle.danger)
+        self.channel_id = channel_id
+
+    async def callback(self, interaction: discord.Interaction):
+        data = active_battles[self.channel_id]
+        if data["단계"] != "공격":
+            await interaction.response.send_message("지금은 공격할 수 없습니다.", ephemeral=False)
+            return
+
+        attacker = data["턴"]
+        defender = data["상대"]
+
+        # 공격 주사위 4개 (1D6 × 4)
+        atk_rolls = [random.randint(1, 6) for _ in range(5)]
+        atk_sum = sum(atk_rolls)
+
+        # 라운드 증가 및 이번 공격 정보 고정 저장
+        data["라운드"] = data.get("라운드", 0) + 1
+        data["최근공격"] = {"합": atk_sum, "주사위": atk_rolls, "라운드": data["라운드"]}
+        data["공격자"] = attacker
+        data["방어자"] = defender
+        data["단계"] = "방어"
+
+        hp1 = get_hp_bar(data["체력"][data["플레이어1"]])
+        hp2 = get_hp_bar(data["체력"][data["플레이어2"]])
+        timestamp = datetime.now(KST).strftime("%Y/%m/%d %H:%M:%S")
+
+        msg = (
+            f"{attacker}의 공격 차례입니다.\n"
+            f"공격 주사위: {' + '.join(map(str, atk_rolls))} = **{atk_sum}**\n\n"
+            f"{defender}의 방어 차례입니다.\n\n"
+            f"{data['플레이어1']}: {hp1}\n"
+            f"{data['플레이어2']}: {hp2}\n"
+            f"{timestamp}"
+        )
+        await interaction.channel.send(msg, view=BattleView(self.channel_id))
+        await interaction.response.defer()
+
+class BattleDefendButton(Button):
+    def __init__(self, channel_id):
+        super().__init__(label="방어", style=discord.ButtonStyle.primary)
+        self.channel_id = channel_id
+
+    async def callback(self, interaction: discord.Interaction):
+        data = active_battles.get(self.channel_id)
+        if not data:
+            await interaction.response.send_message("진행 중인 전투가 없습니다.", ephemeral=True)
+            return
+        if data["단계"] != "방어":
+            await interaction.response.send_message("지금은 방어할 수 없습니다.", ephemeral=True)
+            return
+
+        defender = data["방어자"]
+        attacker = data["공격자"]
+        last = data.get("최근공격") or {}
+
+        # 인터랙션 먼저 보류
+        await interaction.response.defer()
+
+        # 공격 정보
+        atk_sum = int(last.get("합", 0))
+        atk_rolls = last.get("주사위", [])
+
+        # 방어 주사위 굴리기 (기본 1개)
+        def_rolls = [random.randint(1, 6) for _ in range(1)]
+
+        # ✅ 후공 첫 방어 시 주사위 1개 추가
+        if defender == data["후공"] and data.get("첫방어", True):
+            def_rolls.append(random.randint(1, 6))
+            data["첫방어"] = False  # 이후부터는 적용 안 함
+
+        def_sum = sum(def_rolls)
+
+        # 피해 계산:
+        # - 공격 > 방어  → defender에게 (공격-방어)
+        # - 방어 > 공격  → attacker에게 (방어-공격)  ← 반격
+        # - 동일        → 피해 없음(완전 방어)
+        dmg_to_defender = 0
+        dmg_to_attacker = 0
+        if atk_sum > def_sum:
+            dmg_to_defender = atk_sum - def_sum
+            data["체력"][defender] -= dmg_to_defender
+        elif def_sum > atk_sum:
+            dmg_to_attacker = def_sum - atk_sum
+            data["체력"][attacker] -= dmg_to_attacker
+
+        # 표시용 값(최신 HP로)
+        p1 = data["플레이어1"]; p2 = data["플레이어2"]
+        hp1_val = data["체력"][p1]; hp2_val = data["체력"][p2]
+        hp1 = get_hp_bar(hp1_val)
+        hp2 = get_hp_bar(hp2_val)
+        timestamp = datetime.now(KST).strftime("%Y/%m/%d %H:%M:%S")
+
+        # 결과 라인(항상 주사위 내역 포함)
+        if dmg_to_defender > 0:
+            result_line = (
+                f"공격 **{atk_sum}** ( {' + '.join(map(str, atk_rolls))} ) / "
+                f"방어 **{def_sum}** ( {' + '.join(map(str, def_rolls))} ) → "
+                f"{defender} 피해 **{dmg_to_defender}**"
+            )
+        elif dmg_to_attacker > 0:
+            result_line = (
+                f"공격 **{atk_sum}** ( {' + '.join(map(str, atk_rolls))} ) / "
+                f"방어 **{def_sum}** ( {' + '.join(map(str, def_rolls))} ) → "
+                f"{attacker} **반격 피해 {dmg_to_attacker}**"
+            )
+        else:
+            result_line = (
+                f"공격 **{atk_sum}** ( {' + '.join(map(str, atk_rolls))} ) / "
+                f"방어 **{def_sum}** ( {' + '.join(map(str, def_rolls))} ) → **완전 방어**"
+            )
+
+        # ===== 종료 판정 시작 =====
+        # A) 방어자가 맞아서 0 이하
+        if dmg_to_defender > 0 and data["체력"][defender] <= 0:
+            # 후공에게만 최종 반격 1회
+            if not data.get("최종반격", False) and defender == data["후공"]:
+                data["최종반격"] = True
+                data["턴"], data["상대"] = defender, attacker
+                data["단계"] = "공격"
+                msg = (
+                    f"{defender}의 방어 차례입니다.\n"
+                    f"{result_line}\n"
+                    f"{defender}의 체력이 **0 이하**가 되었지만, 마지막 반격 기회를 얻습니다.\n\n"
+                    f"{defender}의 마지막 공격 차례입니다.\n\n"
+                    f"{p1}: {hp1}\n"
+                    f"{p2}: {hp2}\n"
+                    f"{timestamp}"
+                )
+                await interaction.followup.send(msg, view=BattleView(self.channel_id))
+                return
+            else:
+                # 즉시 종료: 현재 HP로 승자 판정(공격자 고정 승리 아님!)
+                winner = decide_winner(hp1_val, hp2_val, p1, p2)
+                result = f"전투가 종료되었습니다. {winner}의 승리입니다." if winner else "전투가 종료되었습니다. 무승부입니다."
+                msg = (
+                    f"{defender}의 방어 차례입니다.\n"
+                    f"{result_line}\n"
+                    f"{defender}의 체력이 **0 이하**가 되었습니다.\n\n"
+                    f"{result}\n"
+                    f"{p1}: {hp1}\n"
+                    f"{p2}: {hp2}\n"
+                    f"{timestamp}"
+                )
+                await interaction.followup.send(msg)
+                del active_battles[self.channel_id]
+                return
+
+        # B) 반격으로 공격자가 0 이하
+        if dmg_to_attacker > 0 and data["체력"][attacker] <= 0:
+            winner = decide_winner(hp1_val, hp2_val, p1, p2)
+            result = f"전투가 종료되었습니다. {winner}의 승리입니다." if winner else "전투가 종료되었습니다. 무승부입니다."
+            msg = (
+                f"{defender}의 방어 차례입니다.\n"
+                f"{result_line}\n\n"
+                f"{result}\n"
+                f"{p1}: {hp1}\n"
+                f"{p2}: {hp2}\n"
+                f"{timestamp}"
+            )
+            await interaction.followup.send(msg)
+            del active_battles[self.channel_id]
+            return
+
+        # C) 최종 반격 흐름에서의 종료 판정(동일 규칙)
+        if data.get("최종반격", False):
+            winner = decide_winner(hp1_val, hp2_val, p1, p2)
+            result = f"전투가 종료되었습니다. {winner}의 승리입니다." if winner else "전투가 종료되었습니다. 무승부입니다."
+            msg = (
+                f"{defender}의 방어 차례입니다.\n"
+                f"{result_line}\n\n"
+                f"{result}\n"
+                f"{p1}: {hp1}\n"
+                f"{p2}: {hp2}\n"
+                f"{timestamp}"
+            )
+            await interaction.followup.send(msg)
+            del active_battles[self.channel_id]
+            return
+        # ===== 종료 판정 끝 =====
+
+        # 일반 턴 전환(방어가 끝났으므로 다음 턴은 defender의 공격)
+        data["턴"], data["상대"] = defender, attacker
+        data["단계"] = "공격"
+
+        msg = (
+            f"{defender}의 방어 차례입니다.\n"
+            f"{result_line}\n\n"
+            f"{defender}의 공격 차례입니다.\n\n"
+            f"{p1}: {hp1}\n"
+            f"{p2}: {hp2}\n"
+            f"{timestamp}"
+        )
+        await interaction.followup.send(msg, view=BattleView(self.channel_id))
+
+class BattleEndButton(Button):
+    def __init__(self, channel_id):
+        super().__init__(label="종료", style=discord.ButtonStyle.secondary)
+        self.channel_id = channel_id
+
+    async def callback(self, interaction: discord.Interaction):
+        data = active_battles.get(self.channel_id)
+        if not data:
+            await interaction.response.send_message("종료할 전투가 없습니다.", ephemeral=False)
+            return
+
+        hp1_val = data["체력"][data["플레이어1"]]
+        hp2_val = data["체력"][data["플레이어2"]]
+        hp1_bar = get_hp_bar(hp1_val)
+        hp2_bar = get_hp_bar(hp2_val)
+        timestamp = datetime.now(KST).strftime("%Y/%m/%d %H:%M:%S")
+
+        # 강제 종료 승패 규칙
+        if hp1_val <= 0 and hp2_val > 0:
+            result = f"{data['플레이어2']}의 승리입니다."
+        elif hp2_val <= 0 and hp1_val > 0:
+            result = f"{data['플레이어1']}의 승리입니다."
+        elif hp1_val <= 0 and hp2_val <= 0:
+            # 둘 다 0 이하 → 0에 가까운 쪽 승리 (값이 더 큰 쪽)
+            if hp1_val > hp2_val:
+                result = f"{data['플레이어1']}의 승리입니다."
+            elif hp2_val > hp1_val:
+                result = f"{data['플레이어2']}의 승리입니다."
+            else:
+                result = "무승부입니다."
+        else:
+            # 둘 다 양수 → 높은 체력 승
+            if hp1_val > hp2_val:
+                result = f"{data['플레이어1']}의 승리입니다."
+            elif hp2_val > hp1_val:
+                result = f"{data['플레이어2']}의 승리입니다."
+            else:
+                result = "무승부입니다."
+
+        msg = (
+            f"전투가 강제로 종료되었습니다.\n\n"
+            f"{data['플레이어1']}: {hp1_bar}\n"
+            f"{data['플레이어2']}: {hp2_bar}\n\n"
+            f"{result}\n"
+            f"{timestamp}"
+        )
+        await interaction.channel.send(msg)
+        await interaction.response.defer()
+        del active_battles[self.channel_id]
+
+class BattleView(View):
+    def __init__(self, channel_id):
+        super().__init__(timeout=None)
+        self.channel_id = channel_id
+        self.add_item(BattleAttackButton(channel_id))
+        self.add_item(BattleDefendButton(channel_id))
+        self.add_item(BattleEndButton(channel_id))
+
+@bot.command()
+async def 전투(ctx, 플레이어1: str, 플레이어2: str):
+    channel_id = ctx.channel.id
+    if channel_id in active_battles:
+        await ctx.send(f"이미 이 채널에서 전투가 진행 중입니다.")
+        return
+
+    first = random.choice([플레이어1, 플레이어2])
+    second = 플레이어2 if first == 플레이어1 else 플레이어1
+
+    active_battles[channel_id] = {
+        "플레이어1": 플레이어1,
+        "플레이어2": 플레이어2,
+        "체력": {플레이어1: 50, 플레이어2: 50},
+        "단계": "공격",
+        "턴": first,
+        "상대": second,
+        "최종반격": False,
+        "선공": first,
+        "후공": second,     # 후공 저장
+        "첫방어": True,       # 후공 첫 방어 주사위 +1 플래그
+        "라운드": 0,           # ← 추가
+        "최근공격": None       # ← 명시 초기화
+    }
+
+    await ctx.send(
+        f"전투를 준비합니다.\n{플레이어1} vs {플레이어2}\n선공: {first}\n\n{first}, 공격을 시작하세요.",
+        view=BattleView(channel_id)
+    )
+# ✅ 전투 기능 끝
+
+bot.run(DISCORD_TOKEN)
