@@ -93,6 +93,17 @@ async def 접속(ctx):
     timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
     await ctx.send(f"현재 봇이 구동 중입니다.\n{timestamp}")
 
+@bot.command(name="승리", help="!승리 이름 → 전투 시트의 가장 최근 미기입 전투 행 E열에 승리자 이름을 기록합니다.")
+async def 승리(ctx, 승자이름: str):
+    try:
+        row = _fill_latest_winner(승자이름)
+        if row is None:
+            await ctx.send("⚠️ 기록할 ‘최근 전투’가 없거나 이미 승리자가 입력되어 있습니다.")
+        else:
+            await ctx.send(f"✅ 승리자 기록 완료: 행 {row} (E열) ← '{승자이름}'")
+    except Exception as e:
+        await ctx.send(f"❌ 승리자 기록 실패: {e}")
+
 # ✅ 연결 테스트용 커맨드 (원하면 삭제 가능)
 @bot.command(name="시트테스트", help="연결 확인 시트의 A1에 현재 시간을 기록하고 값을 확인합니다. 예) !시트테스트")
 async def 시트테스트(ctx):
@@ -104,51 +115,96 @@ async def 시트테스트(ctx):
     except Exception as e:
         await ctx.send(f"❌ 시트 접근 실패: {e}")
 
-@bot.command(name="다이스", help="다이스를 굴려 1에서 10까지의 결괏값을 출력합니다. 예) !다이스")
-async def 다이스(ctx):
-    roll = random.randint(1, 10)
-    timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    await ctx.send(f"1D10 결과: **{roll}**\n{timestamp}")
+# ✅ 다이스 버튼
 
-# ====== 명령어: !합계 / !구매 / !사용 ======
+class DiceButton(Button):
+    def __init__(self, sides: int, style: ButtonStyle, owner_id: int):
+        super().__init__(label=f"1d{sides}", style=style)
+        self.sides = sides
+        self.owner_id = owner_id
+
+    async def callback(self, interaction: discord.Interaction):
+        # 버튼 제한: 명령어 사용한 사람만
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "이 버튼은 명령어를 사용한 사람만 누를 수 있어요.", ephemeral=True
+            )
+            return
+
+        roll = random.randint(1, self.sides)
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        await interaction.response.send_message(
+            f"{interaction.user.mention}의 **1d{self.sides}** 결과: **{roll}**\n{timestamp}"
+        )
+
+class DiceView(View):
+    def __init__(self, owner_id: int, timeout: int = 60):
+        super().__init__(timeout=timeout)
+        # 버튼 색: 빨강(위험)=1d6, 파랑(기본)=1d10, 초록(성공)=1d100
+        self.add_item(DiceButton(6,   ButtonStyle.danger,  owner_id))
+        self.add_item(DiceButton(10,  ButtonStyle.primary, owner_id))
+        self.add_item(DiceButton(100, ButtonStyle.success, owner_id))
+        self.message = None
+
+    async def on_timeout(self):
+        # 타임아웃 시 버튼 비활성화
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+@bot.command(name="다이스", help="버튼으로 1d6/1d10/1d100을 굴립니다. 예) !다이스")
+async def 다이스(ctx):
+    view = DiceView(owner_id=ctx.author.id)
+    msg = await ctx.send(f"{ctx.author.mention} 굴릴 주사위를 선택하세요:", view=view)
+    view.message = msg
+
+# ✅ 구매, 사용
 
 def ws(title: str):
     # 같은 문서 내 워크시트 핸들러
     return gclient.open_by_key(SHEET_KEY).worksheet(title)
 
-@bot.command(name="합계", help="체력값 시트의 대선(G2), 사련(I2) 값을 불러옵니다. 예) !합계")
-async def 합계(ctx):
-    try:
-        sh = ws("체력값")
-        v_g2 = sh.acell("G2").value  # 대선
-        v_i2 = sh.acell("I2").value  # 사련
-        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        await ctx.send(
-            f"현재 대선의 체력값은 '{v_g2}', 사련의 체력값은 '{v_i2}'입니다.\n{timestamp}"
-        )
-    except Exception as e:
-        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        await ctx.send(f"❌ 조회 실패: {e}\n{timestamp}")
+# ===== 전투 시트 로깅 유틸 =====
+def _battle_ws():
+    return ws("전투")  # 같은 문서 내 '전투' 워크시트
 
-def _find_row_by_name(worksheet, name: str) -> int | None:
-    # '명단' 시트의 B열에서 정확히 일치하는 첫 행 번호 반환 (없으면 None)
-    try:
-        colB = worksheet.col_values(2)  # B열 = index 2
-        for idx, val in enumerate(colB, start=1):
-            if (val or "").strip() == name.strip():
-                return idx
-        return None
-    except Exception:
-        return None
+def _battle_now():
+    # 년-월-일 시:분:초
+    return now_kst_str("%Y-%m-%d %H:%M:%S")
 
-def _normalize_items_str(s: str | None) -> str:
-    # 콤마로 구분된 아이템 문자열 정규화 (공백 제거, 빈 토큰 제거)
-    if not s:
-        return ""
-    items = [t.strip() for t in s.split(", ") if t.strip()]
-    return ", ".join(items)
+def _append_battle_row(cmd_name_ko, 이름1, 이름2):
+    """
+    A: 시작시각(타임스탬프)
+    B: 이름1
+    C: 이름2
+    D: 명령어명('깜짝' 또는 '전투')
+    E: 승리자(초기 빈칸)
+    """
+    sh = _battle_ws()
+    sh.append_row([_battle_now(), 이름1, 이름2, cmd_name_ko, ""], value_input_option="USER_ENTERED")
 
-# ===== 공통 유틸 =====
+def _fill_latest_winner(winner_name: str):
+    """
+    E열이 비어 있는 '가장 최근 전투' 행에 승리자 기록.
+    성공 시 행 번호 반환, 없으면 None.
+    """
+    sh = _battle_ws()
+    values = sh.get_all_values()  # 1행 헤더 포함
+    for r in range(len(values), 1, -1):  # 2행부터 유효, 아래→위
+        row = values[r-1]
+        d_val = row[3].strip() if len(row) >= 4 else ""
+        e_val = row[4].strip() if len(row) >= 5 else ""
+        if d_val in ("깜짝", "전투") and e_val == "":
+            sh.update_cell(r, 5, winner_name)  # E열
+            return r
+    return None
+
+# ✅ 공통 유틸
+
 ITEM_RE = re.compile(r"^\s*(.+?)\s*(\d+)\s*개?\s*$")  # "에너지바 2개" / "에너지바 2"
 
 def parse_name_and_qty(text: str):
@@ -218,7 +274,8 @@ def find_row_by_name(sheet, target_name: str, name_col=2):
             return idx
     return None
 
-# ===== !구매 / !사용 =====
+# ✅ 구매, 사용
+
 @bot.command(name="구매", help="!구매 이름 아이템 [수] → 명단 시트 F열 물품 수량을 추가합니다. 예) !구매 홍길동 에너지바 2개")
 async def 구매(ctx, 이름: str, *, 아이템문구: str):
     try:
@@ -303,7 +360,7 @@ def _find_row_in_colB(sh, name: str):
     return None
 
 def _read_hp_D(sh, row: int) -> int:
-    """해당 행의 D열(체력값) 정수 읽기 (비정상/공백은 0)"""
+    """해당 행의 D열(칩) 정수 읽기 (비정상/공백은 0)"""
     raw = (sh.cell(row, 4).value or "0").strip()
     try:
         return int(raw)
@@ -316,10 +373,10 @@ def _write_hp_D(sh, row: int, value: int):
 
 def _apply_delta_to_hp(name: str, delta: int):
     """
-    '체력값' 시트에서 이름(B열) 찾아, 같은 행 D열에 delta만큼 반영.
+    '칩' 시트에서 이름(B열) 찾아, 같은 행 D열에 delta만큼 반영.
     반환: (row, cur_val, new_val)
     """
-    sh = ws("체력값")
+    sh = ws("칩")
     row = _find_row_in_colB(sh, name)
     if not row:
         return None, None, None
@@ -328,7 +385,9 @@ def _apply_delta_to_hp(name: str, delta: int):
     _write_hp_D(sh, row, new_val)
     return row, cur_val, new_val
 
-@bot.command(name="추첨", help="!추첨 숫자 → 체력값 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3")
+# ✅ 추첨
+
+@bot.command(name="추첨", help="!추첨 숫자 → 칩 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3")
 async def 추첨(ctx, 숫자: str):
     if not 숫자.isdigit():
         await ctx.send(f"⚠️ 숫자를 입력하세요. 예) `!추첨 3`")
@@ -340,7 +399,7 @@ async def 추첨(ctx, 숫자: str):
         return
 
     try:
-        sh = ws("체력값")
+        sh = ws("칩")
         colB = sh.col_values(2)  # B열 전체
         if len(colB) < 6:
             await ctx.send(f"⚠️ B6 이후 이름 데이터가 없습니다.")
@@ -363,7 +422,8 @@ async def 추첨(ctx, 숫자: str):
     except Exception as e:
         await ctx.send(f"❌ 추첨 실패: {e}")
 
-# 랜덤 전용 파서 (메시지 문구를 랜덤에 맞춤)
+# ✅ 랜덤
+
 def _parse_names_and_k_for_random(args):
     """
     args: ("이름1","이름2","...","k")
@@ -417,7 +477,9 @@ async def 랜덤(ctx, *args):
     winners = random.sample(names, k)  # 중복 당첨 없음
     await ctx.send(f"랜덤 선택 ({k}명): {', '.join(winners)}{adjusted_msg}\n{timestamp}")
 
-@bot.command(name="추가", help="!추가 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 체력값을 수치만큼 더합니다. 예) !추가 홍길동 김철수 5")
+# ✅ 추가
+
+@bot.command(name="추가", help="!추가 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 칩을 수치만큼 더합니다. 예) !추가 홍길동 김철수 5")
 async def 추가(ctx, *args):
     parsed, err = _parse_names_and_amount(args)
     timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
@@ -446,7 +508,9 @@ async def 추가(ctx, *args):
     parts.append(timestamp)
     await ctx.send(f"\n".join(parts))
 
-@bot.command(name="차감", help="!차감 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 체력값을 수치만큼 뺍니다. 예) !차감 홍길동 김철수 3")
+# ✅ 차감
+
+@bot.command(name="차감", help="!차감 이름1 [이름2 ...] 수치 → 지정된 모든 이름의 칩을 수치만큼 뺍니다. 예) !차감 홍길동 김철수 3")
 async def 차감(ctx, *args):
     parsed, err = _parse_names_and_amount(args)
     timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
@@ -474,7 +538,7 @@ async def 차감(ctx, *args):
     parts.append(timestamp)
     await ctx.send(f"\n".join(parts))
 
-# ====== 도움말: 고정 순서/설명으로 보기 좋게 출력 ======
+# ✅ 도움말
 
 # 기본 help 제거 (중복 방지)
 bot.remove_command("help")
@@ -483,14 +547,14 @@ bot.remove_command("help")
 HELP_OVERRIDES = {
     "도움말":  "현재 사용 가능한 명령어 목록을 표시합니다.",
     "시트테스트":    "연결 확인 시트의 A1에 현재 시간을 기록하고 값을 확인합니다. 예) !시트테스트",
-    "추첨":    "체력값 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3",
+    "추첨":    "칩 시트 B6부터 마지막 행까지 이름 중에서 숫자만큼 무작위 추첨합니다. 예) !추첨 3",
     "랜덤":    "쉼표 제외 입력한 이름 중 하나를 무작위로 출력합니다. 예) !랜덤 김철수 신짱구 훈이",
-    "합계":   "체력값 시트의 대선(G2), 사련(I2) 값을 불러옵니다. 예) !합계",
+    "합계":   "칩 시트의 대선(G2), 사련(I2) 값을 불러옵니다. 예) !합계",
     "구매":   "명단 시트에서 B열의 이름을 찾아 같은 행 F열 물품목록에 아이템을 추가(콤마 누적)합니다. 예) !구매 홍길동 붕대",
     "사용":   "명단 시트에서 B열의 이름을 찾아 같은 행 F열에서 해당 아이템 1개를 제거합니다. 예) !사용 홍길동 붕대",
-    "전체":   "!전체 +수치 / -수치 → 체력값 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3",
-    "추가":   "체력값 시트에서 B열의 이름을 찾아 같은 행 D열(체력값)에 수치만큼 더합니다. 예) !추가 홍길동 5",
-    "차감":   "체력값 시트에서 B열의 이름을 찾아 같은 행 D열(체력값)에서 수치만큼 뺍니다. 예) !차감 홍길동 5",
+    "전체":   "!전체 +수치 / -수치 → 칩 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3",
+    "추가":   "칩 시트에서 B열의 이름을 찾아 같은 행 D열(칩)에 수치만큼 더합니다. 예) !추가 홍길동 5",
+    "차감":   "칩 시트에서 B열의 이름을 찾아 같은 행 D열(칩)에서 수치만큼 뺍니다. 예) !차감 홍길동 5",
     "접속":   "현재 봇이 정상 작동 중인지 확인합니다.",
     "다이스":    "다이스를 굴려 1에서 10까지의 결괏값을 출력합니다. 예) !다이스",
     "전투":    "전투에 참여하는 플레이어 이름을 입력하여 전투를 진행합니다. 예) !전투 이름1 이름2"
@@ -522,7 +586,7 @@ async def 도움말(ctx):
 
 @bot.command(
     name="전체",
-    help="!전체 +수치 / -수치 → 체력값 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3"
+    help="!전체 +수치 / -수치 → 칩 시트 D6부터 마지막 데이터 행까지 숫자 셀에 수치만큼 일괄 증감합니다. 예) !전체 +5, !전체 -3"
 )
 async def 전체(ctx, 수치: str):
     s = (수치 or "").strip()
@@ -536,7 +600,7 @@ async def 전체(ctx, 수치: str):
         return
 
     try:
-        sh = ws("체력값")
+        sh = ws("칩")
 
         # 마지막 행 계산 (D열에서)
         col_d = sh.col_values(4)  # D열 전체 값
@@ -571,7 +635,7 @@ async def 전체(ctx, 수치: str):
         sign = "+" if delta >= 0 else ""
         timestamp = now_kst_str()
         await ctx.send(
-            f"✅ 전체 체력값에 적용 완료했습니다.\n{timestamp}"
+            f"✅ 전체 칩에 적용 완료했습니다.\n{timestamp}"
         )
 
     except Exception as e:
@@ -869,6 +933,12 @@ async def 전투(ctx, 플레이어1: str, 플레이어2: str):
     if channel_id in active_battles:
         await ctx.send(f"이미 이 채널에서 전투가 진행 중입니다.")
         return
+
+        # 전투 시작 기록 (시트)
+    try:
+        _append_battle_row("전투", 플레이어1, 플레이어2)
+    except Exception as e:
+        await ctx.send(f"⚠️ 시트 기록 경고: {e}")
 
     first = random.choice([플레이어1, 플레이어2])
     second = 플레이어2 if first == 플레이어1 else 플레이어1
