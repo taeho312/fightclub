@@ -4,7 +4,7 @@ from discord.ext import commands
 from discord.ui import Button, View
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta, timezon
+from datetime import datetime, timedelta, timezone
 import random
 import os
 import json
