@@ -770,8 +770,14 @@ class OddEvenButton(Button):
         # 4) 다음 라운드 or 종료
         if self.round_no < 3:
             await interaction.channel.send(
-                f"다음 라운드로 진행합니다. ({self.round_no+1}R)",
-                view=OddEvenView(self.round_no+1, self.이름1, self.이름2, self.owner_id, self.sum1, self.sum2)
+                f"{self.round_no}R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
+                f"다음 라운드로 진행합니다. ({self.round_no+1}R)\n"
+                f"{['첫 번째', '두 번째', '세 번째'][self.round_no]} 홀짝을 선택해 주십시오.",
+                view=OddEvenView(
+                    self.round_no+1, 
+                    self.이름1, self.이름2, 
+                    self.owner_id, self.sum1, self.sum2
+                )
             )
         else:
             ts_final = now_kst_str("%Y/%m/%d %H:%M:%S")
@@ -781,7 +787,7 @@ class OddEvenButton(Button):
                 result_line = f"{self.이름2}의 승리입니다."
             else:
                 result_line = "무승부입니다."
-
+        
             await interaction.channel.send(
                 f"3R 결과: {self.이름1} {r1} ({res1})  {self.이름2} {r2} ({res2})\n"
                 f"{self.이름1}: {self.sum1}\n"
